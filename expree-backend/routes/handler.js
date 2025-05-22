@@ -1,60 +1,71 @@
 // routes/handler.js
-const express = require("express")
-const router = express.Router()
-const axios = require("axios")
+const express = require("express");
+const router = express.Router();
+const axios = require("axios");
 
-const GOOGLE_API_KEY ="AIzaSyDaE6b8QxYyHnWtOb6OUAVsRdW8-4SJh2U"
-const SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/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"
+const GOOGLE_API_KEY = "AIzaSyB_IYNtJN6QruC2GuRUWPy09p-tEyBVpjQ";
+const SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/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";
 
-// Update the route to accept a link parameter
+
 router.post("/summarize-and-send", async (req, res) => {
-  const { tasks, link } = req.body
+  const { tasks, link } = req.body;
+
+  console.log("Received /summarize-and-send request:", { tasks, link });
 
   if (!tasks || !Array.isArray(tasks)) {
-    return res.status(400).json({ error: "Tasks array is required" })
+    return res.status(400).json({ error: "Tasks array is required" });
   }
 
   try {
-    // Format the task list
+    // Format task list string for prompt
     const taskList = tasks
       .map((task, i) => {
-        const due = task.dueDate ? `Due: ${new Date(task.dueDate).toLocaleDateString()}` : ""
-        return `${i + 1}. ${task.title} [${task.completed ? "Completed" : "Pending"}] [${task.priority}] ${due}`
+        const due = task.dueDate ? `Due: ${new Date(task.dueDate).toLocaleDateString()}` : "";
+        return `${i + 1}. ${task.title} [${task.completed ? "Completed" : "Pending"}] [${task.priority}] ${due}`;
       })
-      .join("\n")
+      .join("\n");
 
-    // Add link to the prompt if provided
-    const linkSection = link ? `\n\nInclude this link in the summary: ${link}` : ""
+    // Include link if provided
+    const linkSection = link ? `\n\nInclude this link in the summary: ${link}` : "";
 
+    // Prepare prompt for Gemini API
     const prompt = `Summarize the following tasks in Markdown format with the following sections:
-I. main detailed explanation of the tasks and proprly arranging them in a correct order for working and explaining them correctly
+I. main detailed explanation of the tasks and properly arranging them in a correct order for working and explaining them correctly
 1. Overview (total, completed, pending)
 2. High Priority Tasks
 3. Completed Tasks
 4. Pending Tasks${linkSection}
 
-
 Tasks:
-${taskList}`
+${taskList}`;
 
-    // 1. Call Gemini API
-    const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [{ text: prompt }],
-          },
-        ],
-      },
-      {
-        headers: { "Content-Type": "application/json" },
-      },
-    )
+    console.log("Prompt sent to Gemini API:", prompt);
 
-    const summary = geminiRes.data.candidates?.[0]?.content?.parts?.[0]?.text || "No summary generated."
+    // Call Gemini API
+    let summary = "No summary generated.";
+    try {
+      const geminiRes = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_API_KEY}`,
+        {
+          contents: [
+            {
+              parts: [{ text: prompt }],
+            },
+          ],
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
 
-    // 2. Format Slack message with blocks
+      summary = geminiRes.data.candidates?.[0]?.content?.parts?.[0]?.text || summary;
+      console.log("Gemini API summary:", summary);
+    } catch (geminiError) {
+      console.error("Gemini API error:", geminiError.response?.data || geminiError.message);
+      return res.status(500).json({ error: "Gemini API error", message: geminiError.message });
+    }
+
+    // Format Slack message blocks
     const blocks = [
       {
         type: "header",
@@ -80,26 +91,31 @@ ${taskList}`
           },
         ],
       },
-    ]
+    ];
 
-    // Check if webhook URL is provided in query params
-    const webhookUrl = req.query?.webhookUrl || SLACK_WEBHOOK_URL
+    // Slack webhook URL (from query param or default)
+    const webhookUrl = req.query?.webhookUrl || SLACK_WEBHOOK_URL;
 
-    // Only send to Slack if not just updating the summary
-    if (!req.query?.summaryOnly) {
-      // 3. Send to Slack
-      await axios.post(webhookUrl, { blocks })
+    // Send summary to Slack unless only summary requested
+    try {
+      if (!req.query?.summaryOnly) {
+        await axios.post(webhookUrl, { blocks });
+        console.log("Slack message sent successfully");
+      }
+    } catch (slackError) {
+      console.error("Slack send error:", slackError.response?.data || slackError.message);
+      // You can decide to still respond with summary or fail - here we continue
     }
 
-    // 4. Respond to client
-    res.json({ success: true, summary })
+    // Send success response with summary text
+    res.json({ success: true, summary });
   } catch (error) {
-    console.error("Error:", error.response?.data || error.message)
+    console.error("Unexpected error:", error);
     res.status(500).json({
       error: "Something went wrong while summarizing or sending to Slack.",
       message: error.message,
-    })
+    });
   }
-})
+});
 
-module.exports = router
+module.exports = router;
